@@ -7,35 +7,51 @@ const app = express();
 app.use(cors());
 const server = http.createServer(app);
 
-const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 const WALLET_API_URL = "https://matkaexch.live/api/wallet_api.php"; 
 
-// --- SAARE GAMES KI TABLES ---
-const tables = {
-    'points_1': { players: [], pot: 0, entryFee: 80, activeTurn: 0, timer: null },
-    'pool_201': { players: [], pot: 0, entryFee: 50, activeTurn: 0, timer: null },
-    'deals_2':  { players: [], pot: 0, entryFee: 100, activeTurn: 0, timer: null }
-};
+// Dynamic Tables Storage
+const tables = {}; 
 
-app.get('/', (req, res) => res.send("Advanced Rummy Engine Live: 3-Strike Rule Active!"));
+// Card Deck Generator
+const suits = [{s: '♥', c: 'red'}, {s: '♦', c: 'red'}, {s: '♣', c: 'black'}, {s: '♠', c: 'black'}];
+const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+function getShuffledDeck() {
+    let deck = [];
+    for (let suit of suits) {
+        for (let value of values) {
+            deck.push({ value, suit: suit.s, color: suit.c });
+        }
+    }
+    for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    return deck;
+}
+
+const indianBotNames = ["Rahul", "Pooja", "Amit", "Sneha", "Vikram", "Anjali", "Karan", "Priya"];
+
+app.get('/', (req, res) => res.send("Pro Rummy Engine: Bots & Real Cards Active!"));
 
 io.on('connection', (socket) => {
-    console.log(`New connection: ${socket.id}`);
-
-    // --- EVENT 1: JOIN LOBBY (Paisa Katna) ---
+    
     socket.on('join_table', async (data) => {
-        const { userId, tableId } = data;
-        const table = tables[tableId];
+        const { userId, tableId, entryFee } = data;
         
-        if (!table) return socket.emit('error', { message: "Table not found." });
-
+        // Dynamically create table if it doesn't exist
+        if (!tables[tableId]) {
+            tables[tableId] = { players: [], pot: 0, entryFee: parseInt(entryFee), activeTurn: 0, timer: null, deck: [] };
+        }
+        
+        const table = tables[tableId];
         const existingPlayer = table.players.find(p => p.id == userId);
         if(existingPlayer) return socket.emit('table_joined', { success: true, tableId });
 
         try {
+            // Deduct Wallet Balance
             const formData = new URLSearchParams();
             formData.append('user_id', userId);
             formData.append('amount', table.entryFee);
@@ -46,10 +62,28 @@ io.on('connection', (socket) => {
             const dbData = await response.json();
 
             if (dbData.success) {
-                // Naya Player: missedTurns = 0 set kiya hai
-                table.players.push({ id: userId, socketId: null, status: 'active', missedTurns: 0 });
+                table.players.push({ id: userId, isBot: false, socketId: null, status: 'active', missedTurns: 0 });
                 table.pot += table.entryFee;
                 socket.emit('table_joined', { success: true, tableId });
+
+                // INSTANT BOT LOGIC: If player is alone, add a bot after 2 seconds
+                if (table.players.length === 1) {
+                    setTimeout(() => {
+                        if (table.players.length === 1) { // Still alone?
+                            let botName = indianBotNames[Math.floor(Math.random() * indianBotNames.length)];
+                            let botId = "BOT_" + Math.random().toString(36).substr(2, 5);
+                            
+                            table.players.push({ id: botId, name: botName, isBot: true, status: 'active', missedTurns: 0 });
+                            table.pot += table.entryFee; // Bot also contributes to pot
+                            
+                            io.to(tableId).emit('update_table_ui', { players: table.players, pot: table.pot });
+                            io.to(tableId).emit('sys_message', `${botName} joined the table!`);
+                            
+                            startNextTurn(tableId); // Start game!
+                        }
+                    }, 2000);
+                }
+
             } else {
                 socket.emit('error', { message: dbData.message || "Balance issue." });
             }
@@ -58,7 +92,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- EVENT 2: RECONNECT ON GAME PAGE ---
     socket.on('enter_game_room', (data) => {
         const { userId, tableId } = data;
         const table = tables[tableId];
@@ -71,10 +104,7 @@ io.on('connection', (socket) => {
             const player = table.players.find(p => p.id == userId);
             if(player) player.socketId = socket.id;
 
-            io.to(tableId).emit('update_table_ui', {
-                players: table.players,
-                pot: table.pot
-            });
+            io.to(tableId).emit('update_table_ui', { players: table.players, pot: table.pot });
 
             if (table.players.length >= 2 && !table.timer) {
                 startNextTurn(tableId);
@@ -82,49 +112,64 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- TIMEOUT & 3-STRIKE DROP LOGIC ---
     function startNextTurn(tableId) {
         const table = tables[tableId];
         if (!table) return;
 
-        clearTimeout(table.timer);
+        // If game just started, deal REAL CARDS
+        if (table.deck.length === 0) {
+            table.deck = getShuffledDeck();
+            table.players.forEach(p => {
+                if(!p.isBot && p.socketId) {
+                    let userCards = table.deck.splice(0, 13);
+                    io.to(p.socketId).emit('deal_cards', userCards);
+                } else if(p.isBot) {
+                    table.deck.splice(0, 13); // Remove bot's cards from deck
+                }
+            });
+        }
 
+        clearTimeout(table.timer);
         const activePlayers = table.players.filter(p => p.status === 'active');
         
-        // AUTO-WIN LOGIC
-        if (activePlayers.length === 1) {
+        if (activePlayers.length === 1 && !activePlayers[0].isBot) {
             return processWin(activePlayers[0].id, tableId);
+        } else if (activePlayers.length === 1 && activePlayers[0].isBot) {
+            // Bot won, reset table
+            io.to(tableId).emit('game_over', { winner: "BOT", message: "Bot Won. Better luck next time!" });
+            table.pot = 0; table.players = []; table.deck = [];
+            return;
         }
         if (activePlayers.length === 0) return; 
 
-        // Next player turn
         table.activeTurn = (table.activeTurn + 1) % table.players.length;
         let currentPlayer = table.players[table.activeTurn];
 
-        if (currentPlayer.status !== 'active') {
-            return startNextTurn(tableId);
-        }
+        if (currentPlayer.status !== 'active') return startNextTurn(tableId);
 
         io.to(tableId).emit('turn_update', { activeUserId: currentPlayer.id, time: 15 });
 
-        // 15 Second Timer -> 3 Strikes Logic
+        // BOT PLAY LOGIC
+        if (currentPlayer.isBot) {
+            setTimeout(() => {
+                io.to(tableId).emit('sys_message', `${currentPlayer.name} played a card.`);
+                startNextTurn(tableId);
+            }, 3000); // Bot takes 3 seconds to play
+            return;
+        }
+
         table.timer = setTimeout(() => {
-            currentPlayer.missedTurns++; // Chance Count Badhao
-            
+            currentPlayer.missedTurns++; 
             if (currentPlayer.missedTurns >= 3) {
-                // 3 Baar miss kar diya -> DROP
-                io.to(tableId).emit('sys_message', `Player ${currentPlayer.id} dropped after 3 Timeouts!`);
+                io.to(tableId).emit('sys_message', `Player dropped after 3 Timeouts!`);
                 currentPlayer.status = 'dropped';
             } else {
-                // Warning Bhejo
-                io.to(tableId).emit('sys_message', `Player ${currentPlayer.id} missed turn. Warning: ${currentPlayer.missedTurns}/3`);
+                io.to(tableId).emit('sys_message', `Turn missed. Warning: ${currentPlayer.missedTurns}/3`);
             }
-            
-            startNextTurn(tableId); // Agle player par jao
+            startNextTurn(tableId);
         }, 15000); 
     }
 
-    // --- EVENT 3: MANUAL DROP ---
     socket.on('drop_game', () => {
         const { userId, tableId } = socket;
         const table = tables[tableId];
@@ -138,26 +183,22 @@ io.on('connection', (socket) => {
                     startNextTurn(tableId);
                 } else {
                     const activePlayers = table.players.filter(p => p.status === 'active');
-                    if(activePlayers.length === 1) processWin(activePlayers[0].id, tableId);
+                    if(activePlayers.length === 1 && !activePlayers[0].isBot) processWin(activePlayers[0].id, tableId);
                 }
             }
         }
     });
 
-    // --- EVENT 4: DECLARE WIN (MANUAL) ---
     socket.on('declare_win', () => {
         const { userId, tableId } = socket;
-        if (!userId || !tableId) return socket.emit('error', { message: "Invalid game state. Refresh page." });
         processWin(userId, tableId);
     });
 
-    // Winnings Process Function
     async function processWin(winnerId, tableId) {
         const table = tables[tableId];
         if (!table || table.pot <= 0) return;
 
-        clearTimeout(table.timer);
-        table.timer = null;
+        clearTimeout(table.timer); table.timer = null;
         const totalPot = table.pot;
         
         try {
@@ -172,26 +213,14 @@ io.on('connection', (socket) => {
 
             if (dbData.success) {
                 io.to(tableId).emit('game_over', { 
-                    winner: winnerId, 
-                    creditedAmount: dbData.credited,
-                    message: `Game Over! Player ${winnerId} Won ₹${dbData.credited}.`
+                    winner: winnerId, creditedAmount: dbData.credited,
+                    message: `Game Over! You Won ₹${dbData.credited}.`
                 });
-
-                table.pot = 0;
-                table.players = [];
-                table.activeTurn = 0;
-            } else {
-                console.error("Wallet Error:", dbData.message);
+                table.pot = 0; table.players = []; table.activeTurn = 0; table.deck = [];
             }
-        } catch (err) {
-            console.error("Prize API Error", err);
-        }
+        } catch (err) { console.error(err); }
     }
-
-    socket.on('disconnect', () => {
-        console.log(`Disconnected: ${socket.id}`);
-    });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`✅ Advanced Engine Running on Port ${PORT}`));
+server.listen(PORT, () => console.log(`✅ Engine Running on Port ${PORT}`));
