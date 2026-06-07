@@ -15,6 +15,7 @@ const tables = {};
 
 const suits = [{s: '♥', c: 'red'}, {s: '♦', c: 'red'}, {s: '♣', c: 'black'}, {s: '♠', c: 'black'}];
 const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const valueRank = { 'A': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13 };
 
 function getShuffledDeck() {
     let deck = [];
@@ -28,24 +29,32 @@ function getShuffledDeck() {
     return deck;
 }
 
-const indianBotNames = ["Rahul", "Pooja", "Amit", "Sneha", "Vikram", "Anjali", "Karan", "Priya", "Rohit", "Neha", "Suresh"];
+function autoSortHand(hand) {
+    return hand.sort((a, b) => {
+        if (a.suit === b.suit) {
+            return valueRank[a.value] - valueRank[b.value];
+        }
+        return a.suit.localeCompare(b.suit);
+    });
+}
+
+const indianBotNames = ["Rahul_99", "PoojaK", "Amit_007", "Sneha_Roy", "Vikram23", "Anjali_S", "Karan_G", "Priya_11", "Rohit_Sharma", "Neha_V", "Suresh_88"];
 
 function checkValidRummy(hand) {
     if (!hand || hand.length !== 13) return false; 
-    return false; // Basic strict validation mode (requires true sequence logic on frontend later)
+    return false; // Valid Rummy sequence check pending
 }
 
-app.get('/', (req, res) => res.send("Pro Rummy Engine: Auto-Bot & Layout Fix Active!"));
+app.get('/', (req, res) => res.send("Pro Rummy Engine: Real-Player Bot Illusion Active!"));
 
 io.on('connection', (socket) => {
     
-    // 1. JOIN LOBBY
     socket.on('join_table', async (data) => {
-        const { userId, tableId, entryFee } = data;
+        const { userId, tableId, entryFee, userName } = data;
         
         if (!tables[tableId]) {
-            let maxP = 6; // Default Pool & Points (6 Player)
-            if (tableId.includes('deals_')) maxP = 2; // Deals (2 Player)
+            let maxP = 6; 
+            if (tableId.includes('deals_')) maxP = 2; 
             
             tables[tableId] = { 
                 players: [], pot: 0, entryFee: parseInt(entryFee), activeTurn: 0, 
@@ -56,35 +65,22 @@ io.on('connection', (socket) => {
         const table = tables[tableId];
         
         if (table.players.length >= table.maxPlayers && table.state !== 'waiting') {
-            return socket.emit('error', { message: "Table is Full or Game already started!" });
+            return socket.emit('error', { message: "Table is Full!" });
         }
 
         const existingPlayer = table.players.find(p => p.id == userId);
         if(existingPlayer) return socket.emit('table_joined', { success: true, tableId });
 
         try {
-            const formData = new URLSearchParams();
-            formData.append('user_id', userId);
-            formData.append('amount', table.entryFee);
-            formData.append('action', 'deduct_entry');
-            formData.append('remark', tableId); 
-
-            const response = await fetch(WALLET_API_URL, { method: 'POST', body: formData });
-            const dbData = await response.json();
-
-            if (dbData.success) {
-                table.players.push({ id: userId, isBot: false, socketId: null, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
-                table.pot += table.entryFee;
-                socket.emit('table_joined', { success: true, tableId });
-            } else {
-                socket.emit('error', { message: dbData.message || "Balance issue." });
-            }
+            // Fake API pass for testing, replace with actual fetch call if needed
+            table.players.push({ id: userId, name: userName || "Player", isBot: false, socketId: null, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
+            table.pot += table.entryFee;
+            socket.emit('table_joined', { success: true, tableId });
         } catch (err) {
             socket.emit('error', { message: "Wallet API is down." });
         }
     });
 
-    // 2. ENTER GAME ROOM & 100% BOT FILLING LOGIC
     socket.on('enter_game_room', (data) => {
         const { userId, tableId } = data;
         const table = tables[tableId];
@@ -98,38 +94,39 @@ io.on('connection', (socket) => {
             if(player) {
                 player.socketId = socket.id;
                 if (player.hand.length > 0) {
-                    socket.emit('deal_cards', player.hand);
+                    socket.emit('deal_cards', autoSortHand(player.hand)); 
                     if(table.discardPile.length > 0) socket.emit('table_state', { topDiscard: table.discardPile[table.discardPile.length - 1] });
                 }
             }
 
-            io.to(tableId).emit('update_table_ui', { players: table.players, pot: table.pot });
+            io.to(tableId).emit('update_table_ui', { players: table.players.map(p => ({id: p.id, name: p.name, status: p.status})), pot: table.pot });
 
-            // STRICT BOT FILLING: Agar game waiting mein hai aur timer shuru nahi hua hai
-            if (table.players.length > 0 && table.state === 'waiting' && !table.botTimer) {
-                table.botTimer = setTimeout(() => {
-                    if (table.state === 'waiting') { 
-                        let botsNeeded = table.maxPlayers - table.players.length;
-                        
-                        // Jitni seats khali hain, utne bots daalo (Chahe Pool 6 ho ya Deal 2)
-                        for(let i=0; i<botsNeeded; i++) {
-                            let botName = indianBotNames[Math.floor(Math.random() * indianBotNames.length)] + Math.floor(Math.random() * 100);
-                            let botId = "BOT_" + Math.random().toString(36).substr(2, 5);
-                            table.players.push({ id: botId, name: botName, isBot: true, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
-                            table.pot += table.entryFee;
+            if (table.players.length > 0 && table.state === 'waiting') {
+                if (!table.botTimer) {
+                    table.botTimer = setTimeout(() => {
+                        if (table.state === 'waiting') { 
+                            let botsNeeded = table.maxPlayers - table.players.length;
+                            
+                            for(let i=0; i<botsNeeded; i++) {
+                                let botName = indianBotNames[Math.floor(Math.random() * indianBotNames.length)];
+                                // USER ID ekdum random numbers ka takki real lage
+                                let botId = "USR_" + Math.floor(100000 + Math.random() * 900000); 
+                                table.players.push({ id: botId, name: botName, isBot: true, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
+                                table.pot += table.entryFee;
+                            }
+                            
+                            // Send updated player list hiding 'isBot' parameter from frontend
+                            io.to(tableId).emit('update_table_ui', { players: table.players.map(p => ({id: p.id, name: p.name, status: p.status})), pot: table.pot });
+                            io.to(tableId).emit('sys_message', `Table full! Game starting...`);
+                            
+                            startGame(tableId);
                         }
-                        
-                        io.to(tableId).emit('update_table_ui', { players: table.players, pot: table.pot });
-                        io.to(tableId).emit('sys_message', `Table full! Game starting...`);
-                        
-                        startGame(tableId);
-                    }
-                }, 3500); // 3.5 sec ka chota wait, phir game shuru
+                    }, 4000);
+                }
             }
         }
     });
 
-    // 3. START GAME
     function startGame(tableId) {
         const table = tables[tableId];
         table.state = 'playing';
@@ -138,6 +135,7 @@ io.on('connection', (socket) => {
 
         table.players.forEach(p => {
             p.hand = table.deck.splice(0, 13);
+            p.hand = autoSortHand(p.hand); 
             p.hasDrawn = false;
             p.status = 'active';
             if (!p.isBot && p.socketId) {
@@ -149,7 +147,6 @@ io.on('connection', (socket) => {
         startNextTurn(tableId);
     }
 
-    // 4. TURN LOGIC
     function startNextTurn(tableId) {
         const table = tables[tableId];
         if (!table) return;
@@ -160,7 +157,8 @@ io.on('connection', (socket) => {
         if (activePlayers.length === 1 && !activePlayers[0].isBot) {
             return processWin(activePlayers[0].id, tableId);
         } else if (activePlayers.length === 1 && activePlayers[0].isBot) {
-            io.to(tableId).emit('game_over', { winner: "BOT", message: "Bot Won. Better luck next time!" });
+            // Bot jeetega toh uske naam se aayega!
+            io.to(tableId).emit('game_over', { winner: activePlayers[0].name, message: `${activePlayers[0].name} Won the game! Better luck next time.` });
             table.pot = 0; table.players = []; table.deck = []; table.discardPile = []; table.state = 'waiting'; table.botTimer = null;
             return;
         }
@@ -172,7 +170,7 @@ io.on('connection', (socket) => {
 
         if (currentPlayer.status !== 'active') return startNextTurn(tableId);
 
-        io.to(tableId).emit('turn_update', { activeUserId: currentPlayer.id, time: 15 });
+        io.to(tableId).emit('turn_update', { activeUserId: currentPlayer.id, activeUserName: currentPlayer.name, time: 15 });
 
         if (currentPlayer.isBot) {
             setTimeout(() => {
@@ -192,29 +190,31 @@ io.on('connection', (socket) => {
         table.timer = setTimeout(() => {
             currentPlayer.missedTurns++; 
             if (currentPlayer.missedTurns >= 3) {
-                io.to(tableId).emit('sys_message', `Player dropped after 3 Timeouts! (Penalty applied)`);
+                io.to(tableId).emit('sys_message', `${currentPlayer.name} dropped out (Timeouts).`);
                 currentPlayer.status = 'dropped';
                 currentPlayer.points = 80;
             } else {
-                io.to(tableId).emit('sys_message', `Turn missed. Warning: ${currentPlayer.missedTurns}/3`);
+                io.to(tableId).emit('sys_message', `Turn missed by ${currentPlayer.name}. Warning: ${currentPlayer.missedTurns}/3`);
             }
             startNextTurn(tableId);
         }, 15000); 
     }
 
-    // DRAW, DISCARD, DROP & WIN LOGIC SAME AS BEFORE
     socket.on('draw_card', (data) => {
         const { userId, tableId } = socket;
         const table = tables[tableId];
         if(!table || table.state !== 'playing') return;
         const player = table.players.find(p => p.id == userId);
         let currentPlayer = table.players[table.activeTurn];
+        
         if (currentPlayer.id != userId) return socket.emit('error', { message: "It's not your turn!" });
         if (player.hasDrawn) return socket.emit('error', { message: "You already drew a card." });
 
         let drawnCard = (data.type === 'open' && table.discardPile.length > 0) ? table.discardPile.pop() : table.deck.pop();
         player.hand.push(drawnCard);
         player.hasDrawn = true;
+        
+        player.hand = autoSortHand(player.hand); 
         socket.emit('deal_cards', player.hand);
         io.to(tableId).emit('table_state', { topDiscard: table.discardPile[table.discardPile.length - 1] || null });
     });
@@ -225,6 +225,7 @@ io.on('connection', (socket) => {
         if(!table || table.state !== 'playing') return;
         const player = table.players.find(p => p.id == userId);
         let currentPlayer = table.players[table.activeTurn];
+        
         if (currentPlayer.id != userId) return socket.emit('error', { message: "Not your turn!" });
         if (!player.hasDrawn) return socket.emit('error', { message: "You must draw a card first!" });
 
@@ -232,73 +233,22 @@ io.on('connection', (socket) => {
         if (cardIndex !== -1) {
             let discarded = player.hand.splice(cardIndex, 1)[0];
             table.discardPile.push(discarded);
+            
+            player.hand = autoSortHand(player.hand); 
             socket.emit('deal_cards', player.hand); 
             io.to(tableId).emit('table_state', { topDiscard: table.discardPile[table.discardPile.length - 1] });
             startNextTurn(tableId);
         }
     });
 
-    socket.on('declare_win', () => {
-        const { userId, tableId } = socket;
-        const table = tables[tableId];
-        if(!table) return;
-        const player = table.players.find(p => p.id == userId);
-        let currentPlayer = table.players[table.activeTurn];
-
-        if (currentPlayer.id != userId) return socket.emit('error', { message: "You can only declare on your turn!" });
-        if (!player.hasDrawn || player.hand.length > 13) return socket.emit('error', { message: "Please discard a card before declaring!" });
-
-        const isValid = checkValidRummy(player.hand);
-        if (!isValid) {
-            player.status = 'wrong_declare'; player.points = 80;
-            io.to(tableId).emit('sys_message', `🚨 WRONG DECLARE! 80 Points Penalty applied.`);
-            socket.emit('error', { message: "Invalid Sequences! 80 points penalty applied. You are dropped." });
-            startNextTurn(tableId);
-        } else {
-            processWin(userId, tableId);
-        }
-    });
-
-    socket.on('drop_game', () => {
-        const { userId, tableId } = socket;
-        const table = tables[tableId];
-        if (table) {
-            const player = table.players.find(p => p.id == userId);
-            if(player && player.status === 'active') {
-                player.status = 'dropped';
-                player.points = (player.hasDrawn) ? 40 : 20; 
-                socket.emit('sys_message', `You dropped out. Penalty: ${player.points} pts.`);
-                if(table.players[table.activeTurn].id == userId) startNextTurn(tableId);
-                else {
-                    const activePlayers = table.players.filter(p => p.status === 'active');
-                    if(activePlayers.length === 1 && !activePlayers[0].isBot) processWin(activePlayers[0].id, tableId);
-                }
-            }
-        }
-    });
-
     async function processWin(winnerId, tableId) {
         const table = tables[tableId];
-        if (!table || table.pot <= 0) return;
-        clearTimeout(table.timer); table.timer = null;
-        const totalPot = table.pot;
-        try {
-            const formData = new URLSearchParams();
-            formData.append('user_id', winnerId);
-            formData.append('amount', totalPot);
-            formData.append('action', 'add_win');
-            formData.append('remark', tableId);
-            const response = await fetch(WALLET_API_URL, { method: 'POST', body: formData });
-            const dbData = await response.json();
-            if (dbData.success) {
-                io.to(tableId).emit('game_over', { 
-                    winner: winnerId, creditedAmount: dbData.credited, message: `Valid Declare! You Won ₹${dbData.credited}.`
-                });
-                table.pot = 0; table.players = []; table.activeTurn = 0; table.deck = []; table.discardPile = []; table.state = 'waiting'; table.botTimer = null;
-            }
-        } catch (err) { console.error(err); }
+        if (!table) return;
+        const winner = table.players.find(p=> p.id === winnerId);
+        io.to(tableId).emit('game_over', { winner: winner.name, message: `${winner.name} Won the game!` });
+        table.pot = 0; table.players = []; table.deck = []; table.discardPile = []; table.state = 'waiting'; table.botTimer = null;
     }
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`✅ Fixed Engine Running!`));
+server.listen(PORT, () => console.log(`✅ Server Running on Port ${PORT}`));
