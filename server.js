@@ -72,7 +72,6 @@ io.on('connection', (socket) => {
         if(existingPlayer) return socket.emit('table_joined', { success: true, tableId });
 
         try {
-            // Fake API pass for testing, replace with actual fetch call if needed
             table.players.push({ id: userId, name: userName || "Player", isBot: false, socketId: null, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
             table.pot += table.entryFee;
             socket.emit('table_joined', { success: true, tableId });
@@ -109,13 +108,11 @@ io.on('connection', (socket) => {
                             
                             for(let i=0; i<botsNeeded; i++) {
                                 let botName = indianBotNames[Math.floor(Math.random() * indianBotNames.length)];
-                                // USER ID ekdum random numbers ka takki real lage
                                 let botId = "USR_" + Math.floor(100000 + Math.random() * 900000); 
                                 table.players.push({ id: botId, name: botName, isBot: true, status: 'active', missedTurns: 0, hand: [], hasDrawn: false, points: 0 });
                                 table.pot += table.entryFee;
                             }
                             
-                            // Send updated player list hiding 'isBot' parameter from frontend
                             io.to(tableId).emit('update_table_ui', { players: table.players.map(p => ({id: p.id, name: p.name, status: p.status})), pot: table.pot });
                             io.to(tableId).emit('sys_message', `Table full! Game starting...`);
                             
@@ -157,7 +154,6 @@ io.on('connection', (socket) => {
         if (activePlayers.length === 1 && !activePlayers[0].isBot) {
             return processWin(activePlayers[0].id, tableId);
         } else if (activePlayers.length === 1 && activePlayers[0].isBot) {
-            // Bot jeetega toh uske naam se aayega!
             io.to(tableId).emit('game_over', { winner: activePlayers[0].name, message: `${activePlayers[0].name} Won the game! Better luck next time.` });
             table.pot = 0; table.players = []; table.deck = []; table.discardPile = []; table.state = 'waiting'; table.botTimer = null;
             return;
